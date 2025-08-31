@@ -38,6 +38,26 @@ const createUser = async (data) => {
       balance: 1 + Math.random() * 10000,
     });
 
+    // Update this user's status to registered in other users' contacts
+    const normalizedNewUserPhone = normalizePhoneNumber(phone);
+    await User.updateMany(
+      { "contacts.phoneNumber": normalizedNewUserPhone },
+      {
+        $set: {
+          "contacts.$[elem].isRegistered": true,
+          "contacts.$[elem].registeredUserDetails": {
+            _id: newUser._id,
+            firstName: newUser.firstName,
+            lastName: newUser.lastName,
+            phone: normalizedNewUserPhone,
+          },
+        },
+      },
+      {
+        arrayFilters: [{ "elem.phoneNumber": normalizedNewUserPhone }],
+      }
+    );
+
     // Generate a JWT token
     const token = jwt.sign({ id: newUser._id }, jwtSecret, {
       expiresIn: "24h",
