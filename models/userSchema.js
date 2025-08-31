@@ -30,7 +30,25 @@ const userSchema = new mongoose.Schema({
   phone: {
     type: String,
     required: true,
+    unique: true,
   },
+  contacts: [
+    {
+      firstName: String,
+      lastName: String,
+      phoneNumber: String,
+      isRegistered: {
+        type: Boolean,
+        default: false,
+      },
+      registeredUserDetails: {
+        _id: mongoose.Schema.Types.ObjectId,
+        firstName: String,
+        lastName: String,
+        phone: String,
+      },
+    },
+  ],
 });
 
 const User = mongoose.model("User", userSchema);

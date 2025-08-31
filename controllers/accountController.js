@@ -1,5 +1,6 @@
 const { default: mongoose } = require("mongoose");
 const { Account } = require("../models/accountSchema");
+const { Transaction } = require("../models/transcationScehma");
 
 const getAccountBalance = async (userId) => {
   try {
@@ -21,6 +22,7 @@ const getAccountBalance = async (userId) => {
 
 const transferAmmount = async (senderId, recipientId, amount) => {
   try {
+    console.log("here");
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -62,13 +64,56 @@ const transferAmmount = async (senderId, recipientId, amount) => {
       message: "Transfer successful",
     };
   } catch (error) {
+    console.log(error);
     return {
       error: "An error occurred while processing the transfer" + error.message,
     };
   }
 };
 
+const getTransactions = async (userId, page = 1, limit = 10) => {
+  try {
+    const skip = (page - 1) * limit;
+
+    const transactions = await Transaction.find({
+      $or: [{ fromUserId: userId }, { toUserId: userId }],
+    })
+      .populate("fromUserId", "firstName lastName phone")
+      .populate("toUserId", "firstName lastName phone")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    console.log(transactions.length);
+
+    const totalTransactions = await Transaction.countDocuments({
+      $or: [{ fromUserId: userId }, { toUserId: userId }],
+    });
+
+    // since we receive transactions as array mongoose documents rather than
+    // plain js objects and we want to update it, we need to first convert it into
+    // plain js object and then add the type of the transation to it
+    const transactionsWithType = transactions.map((transaction) => {
+      const transactionObj = transaction.toObject();
+      transactionObj.type =
+        transaction.fromUserId._id.toString() === userId ? "sent" : "received";
+      return transactionObj;
+    });
+
+    return {
+      transactions: transactionsWithType,
+      currentPage: page,
+      totalPages: Math.ceil(totalTransactions / limit),
+      totalTransactions,
+    };
+  } catch (error) {
+    console.error("Error fetching transactions:", error);
+    return { error: "An error occurred while fetching transactions" };
+  }
+};
+
 module.exports = {
   getAccountBalance,
   transferAmmount,
+  getTransactions,
 };
