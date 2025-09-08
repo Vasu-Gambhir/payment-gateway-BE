@@ -9,6 +9,10 @@ const {
   getContacts,
   addContact,
   deleteUserAccount,
+  verifyEmail,
+  verifyEmailWithCode,
+  verifyPhone,
+  resendVerification,
 } = require("../controllers/userController");
 const { signupSchema, signinSchema, updateUserSchema } = require("../zod/user");
 const authMiddleware = require("../middleware/middleware");
@@ -20,14 +24,14 @@ router.post("/signup", async (req, res) => {
     if (!success) {
       return res.status(411).json({ error: "Invalid request data" });
     }
-    const user = await createUser(data);
-    if (user.error) {
-      return res.status(500).json({ error: user.error });
+    const result = await createUser(data);
+    if (result.error) {
+      return res.status(500).json({ error: result.error });
     }
 
     return res.status(201).json({
-      token: user.token,
-      user: user.user,
+      message: result.message,
+      user: result.user,
     });
   } catch (error) {
     console.error("Validation Error:", error);
@@ -41,15 +45,24 @@ router.post("/signin", async (req, res) => {
     if (!success) {
       return res.status(411).json({ error: "Invalid request data" });
     }
-    const user = await signinUser(data);
-    if (user.error) {
-      console.log(user.error);
-      return res.status(404).json({ error: user.error });
+    const result = await signinUser(data);
+    if (result.error) {
+      console.log(result.error);
+      // Check if it's a verification error to send specific response
+      if (result.needsEmailVerification) {
+        return res.status(403).json({
+          error: result.error,
+          message: result.message,
+          needsEmailVerification: true,
+          userId: result.userId
+        });
+      }
+      return res.status(404).json({ error: result.error });
     }
 
-    return res.status(201).json({
-      token: user.token,
-      user: user.user,
+    return res.status(200).json({
+      token: result.token,
+      user: result.user,
     });
   } catch (error) {
     console.error("Validation Error:", error);
@@ -170,6 +183,99 @@ router.delete("/deleteAccount", authMiddleware, async (req, res) => {
   } catch (error) {
     console.error("Error deleting account:", error);
     return res.status(500).json({ error: "Failed to delete account" });
+  }
+});
+
+router.get("/verify-email", async (req, res) => {
+  try {
+    const { token } = req.query;
+    
+    if (!token) {
+      return res.status(400).json({ error: "Verification token is required" });
+    }
+
+    const result = await verifyEmail(token);
+
+    if (result.error) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("Error verifying email:", error);
+    return res.status(500).json({ error: "Failed to verify email" });
+  }
+});
+
+router.post("/verify-email-code", async (req, res) => {
+  try {
+    const { email, code } = req.body;
+    
+    if (!email || !code) {
+      return res.status(400).json({ error: "Email and verification code are required" });
+    }
+
+    const result = await verifyEmailWithCode(email, code);
+
+    if (result.error) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    return res.status(200).json({
+      message: result.message,
+      token: result.token,
+      user: result.user
+    });
+  } catch (error) {
+    console.error("Error verifying email with code:", error);
+    return res.status(500).json({ error: "Failed to verify email" });
+  }
+});
+
+router.post("/verify-phone", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user;
+    const { code } = req.body;
+
+    if (!code) {
+      return res.status(400).json({ error: "Verification code is required" });
+    }
+
+    const result = await verifyPhone(userId, code);
+
+    if (result.error) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("Error verifying phone:", error);
+    return res.status(500).json({ error: "Failed to verify phone" });
+  }
+});
+
+router.post("/resend-verification", async (req, res) => {
+  try {
+    const { userId, type } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+
+    if (!type || !['email', 'phone'].includes(type)) {
+      return res.status(400).json({ error: "Invalid verification type" });
+    }
+
+    const result = await resendVerification(userId, type);
+
+    if (result.error) {
+      return res.status(400).json({ error: result.error });
+    }
+
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error("Error resending verification:", error);
+    return res.status(500).json({ error: "Failed to resend verification" });
   }
 });
 

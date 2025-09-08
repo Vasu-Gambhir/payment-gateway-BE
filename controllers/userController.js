@@ -4,38 +4,74 @@ const jwt = require("jsonwebtoken");
 const { Account } = require("../models/accountSchema");
 const { Transaction } = require("../models/transcationScehma");
 const { normalizePhoneNumber } = require("../utils/utils");
+const { dollarsToCents, centsToDollars } = require("../utils/moneyUtils");
 require("dotenv").config();
 const csv = require("csvtojson");
+const {
+  generateVerificationToken,
+  generateVerificationCode,
+  sendEmailVerification,
+  sendSMSVerification,
+} = require("../services/verificationService");
 
 const jwtSecret = process.env.JWT_SECRET;
 
 const createUser = async (data) => {
   try {
-    const { username, firstName, lastName, password, phone } = data;
+    const { email, firstName, lastName, password, phone } = data;
 
     // Check if the user already exists
-    const existingUser = await User.findOne({ username });
+    const existingUser = await User.findOne({ email });
     if (existingUser) {
       return {
-        error: "User already exists",
+        error: "User with this email already exists",
       };
     }
+
+    // Generate verification codes
+    const emailCode = generateVerificationCode();
+    const phoneCode = generateVerificationCode();
+    const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
 
     // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
     // Create a new user with normalized phone number
     const newUser = await User.create({
-      username,
+      email,
+      emailVerificationCode: emailCode,
+      emailVerificationExpires: verificationExpiry,
+      phoneVerificationCode: phoneCode,
+      phoneVerificationExpires: verificationExpiry,
       firstName,
       lastName,
       password: hashedPassword,
       phone: normalizePhoneNumber(phone),
     });
 
-    // Create an account for the new user with a random balance
+    // Send verification emails and SMS
+    try {
+      await sendEmailVerification(email, emailCode);
+      console.log("Email verification sent successfully");
+    } catch (emailError) {
+      // If email sending fails, delete the user and return error
+      await User.findByIdAndDelete(newUser._id);
+      console.error(
+        "Failed to send verification email, rolling back user creation:",
+        emailError
+      );
+      return {
+        error:
+          "Failed to send verification email. Please check your email address and try again.",
+      };
+    }
+
+    sendSMSVerification(phone, phoneCode);
+
+    // Create an account for the new user with a random balance (stored as cents)
+    const randomDollars = 1 + Math.random() * 10000;
     await Account.create({
       userId: newUser._id,
-      balance: 1 + Math.random() * 10000,
+      balanceCents: dollarsToCents(randomDollars),
     });
 
     // Update this user's status to registered in other users' contacts
@@ -58,24 +94,23 @@ const createUser = async (data) => {
       }
     );
 
-    // Generate a JWT token
-    const token = jwt.sign({ id: newUser._id }, jwtSecret, {
-      expiresIn: "24h",
-    });
-
-    // Return the user data and token
+    // Don't generate token until email is verified
+    // User must verify email first before getting access
     return {
+      message:
+        "Account created successfully! Please check your email to verify your account before signing in.",
       user: {
         id: newUser._id,
-        username: newUser.username,
+        email: newUser.email,
         firstName: newUser.firstName,
         lastName: newUser.lastName,
         phone: newUser.phone,
+        emailVerified: false,
+        phoneVerified: false,
       },
-      token,
     };
   } catch (error) {
-    console.error("Error creating user:", error);
+    console.log("Error creating user:", error);
     return {
       error: "User creation failed",
     };
@@ -84,15 +119,27 @@ const createUser = async (data) => {
 
 const signinUser = async (data) => {
   try {
-    const { username, password } = data;
+    const { email, password } = data;
 
-    // Find the user by username
-    const user = await User.findOne({ username });
+    // Find the user by email
+    const user = await User.findOne({ email });
     if (!user) {
       return {
         error: "User not found",
       };
     }
+
+    // Check if email is verified
+    if (!user.emailVerified) {
+      return {
+        error: "Email verification required",
+        message:
+          "Please verify your email before signing in. Check your inbox for the verification link.",
+        needsEmailVerification: true,
+        userId: user._id,
+      };
+    }
+
     // Check if the password is correct
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
@@ -108,15 +155,17 @@ const signinUser = async (data) => {
     return {
       user: {
         id: user._id,
-        username: user.username,
+        email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
         phone: user.phone,
+        emailVerified: user.emailVerified,
+        phoneVerified: user.phoneVerified,
       },
       token,
     };
   } catch (error) {
-    console.error("Error signing in user:", error);
+    console.log("Error signing in user:", error);
     return {
       error: "User sign-in failed",
     };
@@ -473,11 +522,11 @@ const deleteUserAccount = async (userId) => {
 
     // Check if user has any balance remaining in their account
     const account = await Account.findOne({ userId: userId });
-    if (account && account.balance > 0) {
+    if (account && account.balanceCents > 0) {
       return {
-        error: `Cannot delete account with remaining balance of $${account.balance.toFixed(
-          2
-        )}. Please transfer or withdraw your balance first.`,
+        error: `Cannot delete account with remaining balance of $${centsToDollars(
+          account.balanceCents
+        ).toFixed(2)}. Please transfer or withdraw your balance first.`,
       };
     }
 
@@ -515,6 +564,132 @@ const deleteUserAccount = async (userId) => {
   }
 };
 
+const verifyEmail = async (token) => {
+  try {
+    const user = await User.findOne({
+      emailVerificationToken: token,
+      emailVerificationExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return { error: "Invalid or expired verification token" };
+    }
+
+    user.emailVerified = true;
+    user.emailVerificationToken = undefined;
+    user.emailVerificationExpires = undefined;
+    await user.save();
+
+    return { message: "Email verified successfully" };
+  } catch (error) {
+    console.error("Error verifying email:", error);
+    return { error: "Failed to verify email" };
+  }
+};
+
+const verifyEmailWithCode = async (email, code) => {
+  try {
+    const user = await User.findOne({
+      email: email,
+      emailVerificationCode: code,
+      emailVerificationExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return { error: "Invalid or expired verification code" };
+    }
+
+    user.emailVerified = true;
+    user.emailVerificationCode = undefined;
+    user.emailVerificationExpires = undefined;
+    await user.save();
+
+    // Generate JWT token after successful verification
+    const token = jwt.sign({ id: user._id }, jwtSecret, {
+      expiresIn: "24h",
+    });
+
+    return {
+      message: "Email verified successfully",
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        phone: user.phone,
+        emailVerified: true,
+        phoneVerified: user.phoneVerified,
+      },
+    };
+  } catch (error) {
+    console.error("Error verifying email with code:", error);
+    return { error: "Failed to verify email" };
+  }
+};
+
+const verifyPhone = async (userId, code) => {
+  try {
+    const user = await User.findOne({
+      _id: userId,
+      phoneVerificationCode: code,
+      phoneVerificationExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return { error: "Invalid or expired verification code" };
+    }
+
+    user.phoneVerified = true;
+    user.phoneVerificationCode = undefined;
+    user.phoneVerificationExpires = undefined;
+    await user.save();
+
+    return { message: "Phone verified successfully" };
+  } catch (error) {
+    console.error("Error verifying phone:", error);
+    return { error: "Failed to verify phone" };
+  }
+};
+
+const resendVerification = async (userId, type) => {
+  try {
+    const user = await User.findById(userId);
+    if (!user) {
+      return { error: "User not found" };
+    }
+
+    const verificationExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    if (type === "email") {
+      if (user.emailVerified) {
+        return { error: "Email already verified" };
+      }
+      const emailCode = generateVerificationCode();
+      user.emailVerificationCode = emailCode;
+      user.emailVerificationExpires = verificationExpiry;
+      await user.save();
+      await sendEmailVerification(user.email, emailCode);
+      return { message: "Verification email sent" };
+    } else if (type === "phone") {
+      if (user.phoneVerified) {
+        return { error: "Phone already verified" };
+      }
+      const phoneCode = generateVerificationCode();
+      user.phoneVerificationCode = phoneCode;
+      user.phoneVerificationExpires = verificationExpiry;
+      await user.save();
+      await sendSMSVerification(user.phone, phoneCode);
+      return { message: "Verification SMS sent", code: phoneCode };
+    }
+
+    return { error: "Invalid verification type" };
+  } catch (error) {
+    console.error("Error resending verification:", error);
+    return { error: "Failed to resend verification" };
+  }
+};
+
 module.exports = {
   createUser,
   signinUser,
@@ -524,4 +699,8 @@ module.exports = {
   getContacts,
   addContact,
   deleteUserAccount,
+  verifyEmail,
+  verifyEmailWithCode,
+  verifyPhone,
+  resendVerification,
 };

@@ -5,8 +5,10 @@ const {
   getTransactions,
 } = require("../controllers/accountController");
 const authMiddleware = require("../middleware/middleware");
+const { requireEmailVerification } = require("../middleware/verificationMiddleware");
 const { transferSchema } = require("../zod/account");
 const { Transaction } = require("../models/transcationScehma");
+const { User } = require("../models/userSchema");
 const router = epxress.Router();
 
 router.get("/balance", authMiddleware, async (req, res) => {
@@ -25,7 +27,7 @@ router.get("/balance", authMiddleware, async (req, res) => {
   }
 });
 
-router.post("/transfer", authMiddleware, async (req, res) => {
+router.post("/transfer", authMiddleware, requireEmailVerification, async (req, res) => {
   try {
     const { success, data } = transferSchema.safeParse(req.body);
     if (!success) {
@@ -58,6 +60,31 @@ router.post("/transfer", authMiddleware, async (req, res) => {
       ammount: amount,
     });
     console.log(newtransaction);
+    
+    // Send WebSocket notification to recipient
+    try {
+      const wsServer = req.app.get('wsServer');
+      const sender = await User.findById(userId);
+      const recipient = await User.findById(recipientId);
+      
+      if (wsServer && sender && recipient) {
+        const notification = {
+          type: 'money_received',
+          amount: amount,
+          senderName: `${sender.firstName} ${sender.lastName}`,
+          senderId: userId,
+          timestamp: new Date(),
+          transactionId: newtransaction._id
+        };
+        
+        wsServer.sendNotification(recipientId, notification);
+        console.log(`Notification sent to user ${recipientId}`);
+      }
+    } catch (notificationError) {
+      console.error('Error sending notification:', notificationError);
+      // Don't fail the transaction if notification fails
+    }
+    
     return res
       .status(200)
       .json({ message: response.message || "Transfer successful" });

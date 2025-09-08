@@ -1,6 +1,7 @@
 const { default: mongoose } = require("mongoose");
 const { Account } = require("../models/accountSchema");
 const { Transaction } = require("../models/transcationScehma");
+const { dollarsToCents, centsToDollars, isValidCentsAmount } = require("../utils/moneyUtils");
 
 const getAccountBalance = async (userId) => {
   try {
@@ -10,8 +11,10 @@ const getAccountBalance = async (userId) => {
         error: "Account not found",
       };
     }
+    
+    // Return balance in dollars for API compatibility
     return {
-      balance: account.balance,
+      balance: centsToDollars(account.balanceCents),
     };
   } catch (error) {
     return {
@@ -22,7 +25,15 @@ const getAccountBalance = async (userId) => {
 
 const transferAmmount = async (senderId, recipientId, amount) => {
   try {
-    console.log("here");
+    // Convert amount to cents for precise calculations
+    const amountCents = dollarsToCents(amount);
+    
+    if (!isValidCentsAmount(amountCents)) {
+      return {
+        error: "Invalid transfer amount",
+      };
+    }
+
     const session = await mongoose.startSession();
     session.startTransaction();
 
@@ -33,7 +44,8 @@ const transferAmmount = async (senderId, recipientId, amount) => {
         error: "Sender account not found",
       };
     }
-    if (senderAccount.balance < amount) {
+    
+    if (senderAccount.balanceCents < amountCents) {
       await session.abortTransaction();
       return {
         error: "Insufficient balance",
@@ -48,13 +60,15 @@ const transferAmmount = async (senderId, recipientId, amount) => {
       };
     }
 
+    // Update balances using cents for precision
     await Account.updateOne(
       { userId: senderId },
-      { $inc: { balance: -amount } }
+      { $inc: { balanceCents: -amountCents } }
     ).session(session);
+      
     await Account.updateOne(
       { userId: recipientId },
-      { $inc: { balance: amount } }
+      { $inc: { balanceCents: amountCents } }
     ).session(session);
 
     await session.commitTransaction();

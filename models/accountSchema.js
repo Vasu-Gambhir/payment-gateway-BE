@@ -6,10 +6,16 @@ const accountSchema = new mongoose.Schema({
     ref: "User",
     required: true,
   },
-  balance: {
+  balanceCents: {
     type: Number,
     required: true,
     default: 0,
+    validate: {
+      validator: function(value) {
+        return Number.isInteger(value) && value >= 0;
+      },
+      message: 'Balance must be a non-negative integer (cents)'
+    }
   },
 });
 

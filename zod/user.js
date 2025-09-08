@@ -1,11 +1,9 @@
 const zod = require("zod");
 
 const signupSchema = zod.object({
-  username: zod
+  email: zod
     .string()
     .email("Invalid email format")
-    .min(3, "Username must be at least 3 characters long")
-    .max(30, "Username must not exceed 30 characters")
     .trim()
     .toLowerCase(),
   firstName: zod
@@ -21,7 +19,7 @@ const signupSchema = zod.object({
 });
 
 const signinSchema = zod.object({
-  username: zod.string().email("Invalid email format").trim().toLowerCase(),
+  email: zod.string().email("Invalid email format").trim().toLowerCase(),
   password: zod.string().trim(),
 });
 
